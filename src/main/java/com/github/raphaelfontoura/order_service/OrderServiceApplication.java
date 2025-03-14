@@ -34,6 +34,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.java.Log;
+import reactor.core.publisher.Mono;
 
 @SpringBootApplication
 public class OrderServiceApplication {
@@ -53,15 +54,14 @@ enum OrderEvents {
 }
 
 @Service
+@Log
 class OrderService {
 
 	private final OrderRepository repository;
 	private final StateMachineFactory<OrderStates, OrderEvents> factory;
 	private static final String ORDER_ID_KEY = "orderId";
 
-
-	OrderService(OrderRepository repository, StateMachineFactory<OrderStates, OrderEvents> factory,
-			OrderRepository orderRepository) {
+	OrderService(OrderRepository repository, StateMachineFactory<OrderStates, OrderEvents> factory) {
 		this.factory = factory;
 		this.repository = repository;
 	}
@@ -75,7 +75,14 @@ class OrderService {
 		var fullfillMessage = MessageBuilder.withPayload(OrderEvents.FULFILL)
 				.setHeader(ORDER_ID_KEY, orderId)
 				.build();
-		machine.sendEvent(fullfillMessage);
+		machine.sendEvent(Mono.just(fullfillMessage)).subscribe(
+				item -> {	
+					item.getMessage().getHeaders().forEach((k, v) -> log.info(String.format("Key: %s, Value: %s", k, v)));
+					log.info("Success");
+				},
+				error -> log.info("Error"),
+				() -> log.info("Complete")
+		);
 		return machine;
 	}
 
@@ -85,7 +92,14 @@ class OrderService {
 				.setHeader(ORDER_ID_KEY, orderId)
 				.setHeader("paymentConfirmationNumber", paymentConfirmationNumber)
 				.build();
-		machine.sendEvent(paymentMessage);
+		machine.sendEvent(Mono.just(paymentMessage)).subscribe(
+			item -> {	
+				item.getMessage().getHeaders().forEach((k, v) -> log.info(String.format("Key: %s, Value: %s", k, v)));
+				log.info("Success");
+			},
+			error -> log.info("Error"),
+			() -> log.info("Complete")
+		);
 		return machine;
 	}
 
@@ -94,7 +108,9 @@ class OrderService {
 		String orderIdKey = Long.toString(order.getId());
 
 		StateMachine<OrderStates, OrderEvents> sm = factory.getStateMachine(orderIdKey);
-		sm.stop();
+
+		sm.stopReactively().subscribe();
+
 		sm.getStateMachineAccessor()
 				.doWithAllRegions(sma -> {
 					sma.addStateMachineInterceptor(new StateMachineInterceptorAdapter<OrderStates, OrderEvents>() {
@@ -104,20 +120,24 @@ class OrderService {
 								Transition<OrderStates, OrderEvents> transition,
 								StateMachine<OrderStates, OrderEvents> stateMachine,
 								StateMachine<OrderStates, OrderEvents> rootStateMachine) {
-							Optional.ofNullable(message).ifPresent(msg -> {
-								Optional.ofNullable(Long.class.cast(msg.getHeaders().getOrDefault(ORDER_ID_KEY, -1L)))
-										.ifPresent(orderId -> {
-											Order order = repository.findById(orderId).orElseThrow();
-											order.setOrderState(state.getId());
-											repository.save(order);
-										});
-							});
+							Optional.ofNullable(message)
+									.ifPresent(msg -> Optional
+											.ofNullable(
+													Long.class.cast(msg.getHeaders().getOrDefault(ORDER_ID_KEY, -1L)))
+											.ifPresent(orderId -> {
+												Order order = repository.findById(orderId).orElseThrow();
+												order.setOrderState(state.getId());
+												repository.save(order);
+											}));
 						}
 					});
-					sma.resetStateMachine(new DefaultStateMachineContext<>(order.getOrderState(), null, null, null));
+					sma.resetStateMachineReactively(
+							new DefaultStateMachineContext<>(order.getOrderState(), null, null, null)).block();
 
 				});
-		sm.start();
+
+		sm.startReactively().subscribe();
+
 		return sm;
 	}
 
