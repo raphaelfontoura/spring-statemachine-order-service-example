@@ -70,6 +70,10 @@ class OrderService {
 		return this.repository.save(new Order(when, OrderStates.SUBMITTED));
 	}
 
+	Order byId(Long orderId) {
+		return this.repository.findById(orderId).orElseThrow();
+	}
+
 	StateMachine<OrderStates, OrderEvents> fulfill(Long orderId) {
 		var machine = this.build(orderId);
 		var fullfillMessage = MessageBuilder.withPayload(OrderEvents.FULFILL)
@@ -158,12 +162,15 @@ class Runner implements ApplicationRunner {
 
 		Order order = this.service.createOrder(LocalDate.now());
 		log.info(String.format("After calling createOrder() -> %s", order.getOrderState()));
+		log.info("order: " + order);
 
 		var paymentStateMachine = this.service.pay(order.getId(), UUID.randomUUID().toString());
 		log.info(String.format("After calling pay() -> %s", paymentStateMachine.getState().getId().name()));
+		log.info("order: " + service.byId(order.getId()));
 
 		var fulfillStateMachine = this.service.fulfill(order.getId());
 		log.info(String.format("After calling fulfill() -> %s", fulfillStateMachine.getState().getId().name()));
+		log.info("order: " + service.byId(order.getId()));
 
 	}
 
